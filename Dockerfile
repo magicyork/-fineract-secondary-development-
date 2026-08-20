@@ -16,7 +16,7 @@
 # under the License.
 #
 
-FROM azul/zulu-openjdk-alpine:21
+FROM azul/zulu-openjdk-alpine:26
 
 LABEL maintainer="Aleksandar Vidakovic <aleks@apache.org>"
 
