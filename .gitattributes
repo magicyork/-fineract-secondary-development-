@@ -1,0 +1,140 @@
+# ===================================================================
+# Apache Fineract .gitattributes
+# Ensure consistent line endings across all platforms
+# ===================================================================
+
+# Default: all text files use LF line endings
+* text=auto eol=lf
+
+# ===================================================================
+# Source code - explicitly declared as text
+# ===================================================================
+*.java   text
+*.kt     text
+*.kts    text
+*.groovy text
+
+# ===================================================================
+# Build / Configuration files
+# ===================================================================
+*.gradle    text
+*.gradle.kts text
+*.properties text
+*.yaml       text
+*.yml        text
+*.json       text
+*.xml        true
+
+# ===================================================================
+# Web / UI files
+# ===================================================================
+*.html  text
+*.htm   text
+*.css   text
+*.scss  text
+*.less  text
+*.js    text
+*.mjs   text
+*.cjs   text
+*.ts    text
+*.vue   text
+*.jsx   text
+*.tsx   text
+
+# ===================================================================
+# Database / SQL files
+# ===================================================================
+*.sql text
+
+# ===================================================================
+# Documentation
+# ===================================================================
+*.md     text
+*.adoc   text
+*.txt    text
+*.rtf    text
+
+# ===================================================================
+# Shell / Script files
+# ===================================================================
+*.sh     text eol=lf
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+*.py     text
+*.rb     text
+
+# ===================================================================
+# Docker / DevOps
+# ===================================================================
+Dockerfile           text
+docker-compose*.yml  text
+*.dockerfile         text
+
+# ===================================================================
+# Binary files - do NOT modify line endings
+# ===================================================================
+*.jar    binary
+*.war    binary
+*.ear    binary
+*.zip    binary
+*.tar    binary
+*.gz     binary
+*.tgz    binary
+*.bz2    binary
+*.xz     binary
+
+# Images
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.bmp    binary
+*.svg    text
+*.webp   binary
+*.tif    binary
+*.tiff   binary
+
+# Fonts
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+*.eot    binary
+
+# Documents
+*.pdf    binary
+*.doc    binary
+*.docx   binary
+*.xls    binary
+*.xlsx   binary
+*.ppt    binary
+*.pptx   binary
+*.odt    binary
+*.ods    binary
+*.odp    binary
+
+# Other binary
+*.dll    binary
+*.exe    binary
+*.so     binary
+*.dylib  binary
+*.class  binary
+*.pyc    binary
+*.ico    binary
+*.keystore binary
+*.jks    binary
+*.p12    binary
+*.pfx    binary
+*.crt    binary
+*.cer    binary
+*.pem    binary
+*.der    binary
+
+# ===================================================================
+# Build output directories (should be in .gitignore too)
+# ===================================================================
+build/           export-ignore
+*/build/         export-ignore
+!gradle/wrapper/gradle-wrapper.jar binary

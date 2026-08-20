@@ -97,6 +97,9 @@ import org.apache.fineract.portfolio.note.domain.Note;
 import org.apache.fineract.portfolio.note.domain.NoteRepository;
 import org.apache.fineract.portfolio.paymentdetail.domain.PaymentDetail;
 import org.apache.fineract.portfolio.paymentdetail.service.PaymentDetailWritePlatformService;
+import org.apache.fineract.portfolio.paymenttype.domain.PaymentType;
+import org.apache.fineract.portfolio.paymenttype.domain.PaymentTypeRepository;
+import org.apache.fineract.portfolio.paymenttype.exception.PaymentTypeNotFoundException;
 import org.apache.fineract.portfolio.savings.SavingsAccountTransactionType;
 import org.apache.fineract.portfolio.savings.SavingsApiConstants;
 import org.apache.fineract.portfolio.savings.SavingsTransactionBooleanValues;
@@ -148,6 +151,7 @@ public class SavingsAccountWritePlatformServiceJpaRepositoryImpl implements Savi
     private final SavingsAccountTransactionDataValidator savingsAccountTransactionDataValidator;
     private final SavingsAccountChargeDataValidator savingsAccountChargeDataValidator;
     private final PaymentDetailWritePlatformService paymentDetailWritePlatformService;
+    private final PaymentTypeRepository paymentTypeRepository;
     private final JournalEntryWritePlatformService journalEntryWritePlatformService;
     private final SavingsAccountDomainService savingsAccountDomainService;
     private final NoteRepository noteRepository;
@@ -2079,5 +2083,110 @@ public class SavingsAccountWritePlatformServiceJpaRepositoryImpl implements Savi
         if (StringUtils.isBlank(reasonForBlock)) {
             throw new PlatformDataIntegrityException("Reason For Block is Mandatory", "error.msg.reason.for.block.mandatory");
         }
+    }
+
+    @Transactional
+    @Override
+    public CommandProcessingResult depositViaGateway(final Long savingsId, final LocalDate transactionDate,
+            final BigDecimal amount, final Long paymentTypeId, final String accountNumber, final String bankNumber,
+            final String externalRef, final String note) {
+
+        this.context.authenticatedUser();
+
+        final boolean backdatedTxnsAllowedTill = this.savingAccountAssembler.getPivotConfigStatus();
+        final SavingsAccount account = this.savingAccountAssembler.assembleFrom(savingsId, backdatedTxnsAllowedTill);
+        checkClientOrGroupActive(account);
+
+        final PaymentType paymentType = this.paymentTypeRepository.findById(paymentTypeId)
+                .orElseThrow(() -> new PaymentTypeNotFoundException(paymentTypeId));
+
+        final Map<String, Object> changes = new LinkedHashMap<>();
+        changes.put("paymentTypeId", paymentTypeId);
+        if (accountNumber != null) {
+            changes.put("accountNumber", accountNumber);
+        }
+        if (bankNumber != null) {
+            changes.put("bankNumber", bankNumber);
+        }
+
+        final PaymentDetail paymentDetail = PaymentDetail.instance(paymentType, accountNumber, null, null, externalRef,
+                bankNumber);
+
+        final DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+        final SavingsAccountTransaction deposit = this.savingsAccountDomainService.handleDeposit(account, fmt,
+                transactionDate, amount, paymentDetail, false, true, backdatedTxnsAllowedTill);
+        this.savingsAccountTransactionRepository.save(deposit);
+
+        if (StringUtils.isNotBlank(note)) {
+            final Note noteEntity = Note.savingsTransactionNote(account, deposit, note);
+            this.noteRepository.save(noteEntity);
+        }
+
+        return new CommandProcessingResultBuilder() //
+                .withEntityId(deposit.getId()) //
+                .withOfficeId(account.officeId()) //
+                .withClientId(account.clientId()) //
+                .withGroupId(account.groupId()) //
+                .withSavingsId(savingsId) //
+                .with(changes) //
+                .build();
+    }
+
+    @Transactional
+    @Override
+    public CommandProcessingResult withdrawViaGateway(final Long savingsId, final LocalDate transactionDate,
+            final BigDecimal amount, final Long paymentTypeId, final String accountNumber, final String bankNumber,
+            final String externalRef, final String note) {
+
+        this.context.authenticatedUser();
+
+        final boolean backdatedTxnsAllowedTill = this.savingAccountAssembler.getPivotConfigStatus();
+        final SavingsAccount account = this.savingAccountAssembler.assembleFrom(savingsId, backdatedTxnsAllowedTill);
+        checkClientOrGroupActive(account);
+
+        final PaymentType paymentType = this.paymentTypeRepository.findById(paymentTypeId)
+                .orElseThrow(() -> new PaymentTypeNotFoundException(paymentTypeId));
+
+        final Map<String, Object> changes = new LinkedHashMap<>();
+        changes.put("paymentTypeId", paymentTypeId);
+        if (accountNumber != null) {
+            changes.put("accountNumber", accountNumber);
+        }
+        if (bankNumber != null) {
+            changes.put("bankNumber", bankNumber);
+        }
+
+        final PaymentDetail paymentDetail = PaymentDetail.instance(paymentType, accountNumber, null, null, externalRef,
+                bankNumber);
+
+        final DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+        final boolean isAccountTransfer = false;
+        final boolean isRegularTransaction = true;
+        final boolean isApplyWithdrawFee = true;
+        final boolean isInterestTransfer = false;
+        final boolean isWithdrawBalance = false;
+        final SavingsTransactionBooleanValues transactionBooleanValues = new SavingsTransactionBooleanValues(
+                isAccountTransfer, isRegularTransaction, isApplyWithdrawFee, isInterestTransfer, isWithdrawBalance);
+
+        final SavingsAccountTransaction withdrawal = this.savingsAccountDomainService.handleWithdrawal(account, fmt,
+                transactionDate, amount, paymentDetail, transactionBooleanValues, backdatedTxnsAllowedTill);
+        withdrawal.updateExternalId(ExternalIdFactory.produce(externalRef));
+        this.savingsAccountTransactionRepository.save(withdrawal);
+
+        if (StringUtils.isNotBlank(note)) {
+            final Note noteEntity = Note.savingsTransactionNote(account, withdrawal, note);
+            this.noteRepository.save(noteEntity);
+        }
+
+        return new CommandProcessingResultBuilder() //
+                .withEntityId(withdrawal.getId()) //
+                .withOfficeId(account.officeId()) //
+                .withClientId(account.clientId()) //
+                .withGroupId(account.groupId()) //
+                .withSavingsId(savingsId) //
+                .with(changes) //
+                .build();
     }
 }

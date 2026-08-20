@@ -18,6 +18,7 @@
  */
 package org.apache.fineract.portfolio.savings.service;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Set;
@@ -121,4 +122,10 @@ public interface SavingsAccountWritePlatformService {
     CommandProcessingResult bulkGSIMClose(Long gsimId, JsonCommand command);
 
     CommandProcessingResult forceWithdrawal(Long savingsId, JsonCommand command);
+
+    CommandProcessingResult depositViaGateway(Long savingsId, LocalDate transactionDate, BigDecimal amount,
+            Long paymentTypeId, String accountNumber, String bankNumber, String externalRef, String note);
+
+    CommandProcessingResult withdrawViaGateway(Long savingsId, LocalDate transactionDate, BigDecimal amount,
+            Long paymentTypeId, String accountNumber, String bankNumber, String externalRef, String note);
 }

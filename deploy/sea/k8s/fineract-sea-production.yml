@@ -1,0 +1,582 @@
+# =============================================================================
+# Apache Fineract - Southeast Asia Production Kubernetes Deployment
+# Cluster: EKS (AWS) / GKE (GCP)
+# Region: ap-southeast-1 (Singapore) or local region
+# =============================================================================
+
+---
+# =============================================================================
+# Namespace & Network Policies
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fineract-prod
+  labels:
+    name: fineract-prod
+    environment: production
+    region: sea
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fineract-network-policy
+  namespace: fineract-prod
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: fineract-prod
+      ports:
+        - port: 8443
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: fineract-prod
+      ports:
+        - port: 5432
+          protocol: TCP
+        - port: 9092
+          protocol: TCP
+        - port: 6379
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+
+---
+# =============================================================================
+# Secrets (Create these manually! Never commit actual secrets)
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fineract-db-secret
+  namespace: fineract-prod
+type: Opaque
+stringData:
+  username: "fineract"
+  password: "CHANGE_ME_STRONG_PASSWORD"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fineract-ssl-secret
+  namespace: fineract-prod
+type: kubernetes.io/tls
+stringData:
+  tls.crt: "PLACE_TLS_CERT_HERE"
+  tls.key: "PLACE_TLS_KEY_HERE"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fineract-oidc-secret
+  namespace: fineract-prod
+type: Opaque
+stringData:
+  client-secret: "PLACE_KEYCLOAK_CLIENT_SECRET_HERE"
+
+---
+# =============================================================================
+# ConfigMaps
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fineract-config
+  namespace: fineract-prod
+data:
+  country: "philippines"
+  currency-code: "PHP"
+  timezone: "Asia/Manila"
+  tenant-identifier: "philippines"
+  payment-gateways: "gcash,maya,pesonet,unionpay"
+  sms-gateway: "globe"
+  tax-rate: "12"
+
+---
+# =============================================================================
+# PostgreSQL StatefulSet
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: fineract-postgres
+  namespace: fineract-prod
+  labels:
+    app: fineract-postgres
+    tier: database
+spec:
+  serviceName: fineract-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fineract-postgres
+  template:
+    metadata:
+      labels:
+        app: fineract-postgres
+        tier: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_USER
+          value: fineract
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fineract-db-secret
+              key: password
+        - name: POSTGRES_DB
+          value: fineract_tenants
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "4Gi"
+          limits:
+            cpu: "4000m"
+            memory: "16Gi"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-backup
+          mountPath: /backup
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "fineract"]
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "fineract", "-d", "fineract_tenants"]
+          timeoutSeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 70
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+      volumes:
+      - name: postgres-backup
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp2-encrypted
+      resources:
+        requests:
+          storage: 200Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fineract-postgres
+  namespace: fineract-prod
+spec:
+  selector:
+    app: fineract-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  clusterIP: None
+
+---
+# =============================================================================
+# Redis Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fineract-redis
+  namespace: fineract-prod
+  labels:
+    app: fineract-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fineract-redis
+  template:
+    metadata:
+      labels:
+        app: fineract-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        command: ["redis-server"]
+        args: ["--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+        livenessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          timeoutSeconds: 3
+          periodSeconds: 5
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          timeoutSeconds: 3
+          periodSeconds: 5
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+      emptyDirs:
+      - name: redis-data
+        medium: Memory
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fineract-redis
+  namespace: fineract-prod
+spec:
+  selector:
+    app: fineract-redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# =============================================================================
+# Kafka Deployment (KRaft Mode)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fineract-kafka
+  namespace: fineract-prod
+  labels:
+    app: fineract-kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fineract-kafka
+  template:
+    metadata:
+      labels:
+        app: fineract-kafka
+    spec:
+      containers:
+      - name: kafka
+        image: apache/kafka:3.7.1
+        ports:
+        - containerPort: 9092
+          name: kafka
+        - containerPort: 9093
+          name: controller
+        env:
+        - name: KAFKA_NODE_ID
+          value: "1"
+        - name: KAFKA_PROCESS_ROLES
+          value: "broker,controller"
+        - name: KAFKA_LISTENERS
+          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: "PLAINTEXT://fineract-kafka.fineract-prod.svc.cluster.local:9092"
+        - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+          value: "1@fineract-kafka.fineract-prod.svc.cluster.local:9093"
+        - name: KAFKA_LOG_DIRS
+          value: /var/lib/kafka/data
+        - name: KAFKA_LOG_RETENTION_HOURS
+          value: "72"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        livenessProbe:
+          tcpSocket:
+            port: 9092
+          timeoutSeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          timeoutSeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: kafka-data
+          mountPath: /var/lib/kafka/data
+      volumes:
+      - name: kafka-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fineract-kafka
+  namespace: fineract-prod
+spec:
+  selector:
+    app: fineract-kafka
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  clusterIP: None
+
+---
+# =============================================================================
+# Fineract Server Deployment (3 replicas for high availability)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fineract-server
+  namespace: fineract-prod
+  labels:
+    app: fineract-server
+    tier: backend
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: fineract-server
+  template:
+    metadata:
+      labels:
+        app: fineract-server
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8443"
+        prometheus.io/path: "/fineract-provider/actuator/prometheus"
+    spec:
+      serviceAccountName: fineract-sa
+      imagePullSecrets:
+      - name: registry-credentials
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for PostgreSQL..."
+          until nc -z fineract-postgres 5432; do
+            sleep 2
+            echo "Waiting for PostgreSQL..."
+          done
+          echo "PostgreSQL is ready!"
+      - name: wait-for-kafka
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Kafka..."
+          until nc -z fineract-kafka 9092; do
+            sleep 2
+            echo "Waiting for Kafka..."
+          done
+          echo "Kafka is ready!"
+      containers:
+      - name: fineract-server
+        image: registry.your-domain.com/fineract-sea:latest
+        ports:
+        - containerPort: 8443
+          name: fineract
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "2Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /fineract-provider/actuator/health/liveness
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 120
+          periodSeconds: 15
+          failureThreshold: 3
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /fineract-provider/actuator/health/readiness
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
+        env:
+        - name: FINERACT_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: FINERACT_HIKARI_JDBC_URL
+          value: "jdbc:postgresql://fineract-postgres.fineract-prod.svc.cluster.local:5432/fineract_tenants"
+        - name: FINERACT_HIKARI_USERNAME
+          value: "fineract"
+        - name: FINERACT_HIKARI_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fineract-db-secret
+              key: password
+        - name: FINERACT_DEFAULT_TENANTDB_HOSTNAME
+          value: "fineract-postgres.fineract-prod.svc.cluster.local"
+        - name: FINERACT_DEFAULT_TENANTDB_PORT
+          value: "5432"
+        - name: FINERACT_SERVER_PORT
+          value: "8443"
+        - name: FINERACT_SERVER_SSL_ENABLED
+          value: "true"
+        - name: FINERACT_MODE_BATCH_MANAGER_ENABLED
+          value: "true"
+        - name: FINERACT_MODE_BATCH_WORKER_ENABLED
+          value: "true"
+        - name: FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_ENABLED
+          value: "true"
+        - name: FINERACT_REMOTE_JOB_MESSAGE_HANDLER_KAFKA_BOOTSTRAP_SERVERS
+          value: "fineract-kafka.fineract-prod.svc.cluster.local:9092"
+        - name: FINERACT_EXTERNAL_EVENTS_KAFKA_ENABLED
+          value: "true"
+        - name: FINERACT_EXTERNAL_EVENTS_KAFKA_BOOTSTRAP_SERVERS
+          value: "fineract-kafka.fineract-prod.svc.cluster.local:9092"
+        - name: FINERACT_MANAGEMENT_METRICS_TAGS_APPLICATION
+          value: "fineract-sea"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Xmx3G -XX:MaxMetaspaceSize=512m -XX:+UseContainerSupport -XX:+UseG1GC -XX:+StringDeduplication"
+        - name: FINERACT_TENANT_TIMEZONE
+          valueFrom:
+            configMapKeyRef:
+              name: fineract-config
+              key: timezone
+        - name: FINERACT_TENANT_IDENTIFIER
+          valueFrom:
+            configMapKeyRef:
+              name: fineract-config
+              key: tenant-identifier
+        - name: FINERACT_CONFIG_ROUNDING_MODE
+          value: "2"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: logs
+          mountPath: /var/logs/fineract
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: "256Mi"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fineract-server
+  namespace: fineract-prod
+spec:
+  selector:
+    app: fineract-server
+  ports:
+  - port: 8443
+    targetPort: 8443
+    name: fineract
+  type: ClusterIP
+
+---
+# =============================================================================
+# Ingress (AWS ALB / GCP Ingress)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fineract-ingress
+  namespace: fineract-prod
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    # AWS ALB annotations
+    service.beta.kubernetes.io/aws-load-balancer-type: "alb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:ap-southeast-1:ACCOUNT:certificate/CERT_ID"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-attributes: "idle_timeout.timeout_seconds=60,routing.http.drop_invalid_header_fields.enabled=true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.your-domain.com
+    secretName: fineract-tls
+  rules:
+  - host: api.your-domain.com
+    http:
+      paths:
+      - path: /fineract-provider
+        pathType: Prefix
+        backend:
+          service:
+            name: fineract-server
+            port:
+              number: 8443
+      - path: /actuator
+        pathType: Prefix
+        backend:
+          service:
+            name: fineract-server
+            port:
+              number: 8443
